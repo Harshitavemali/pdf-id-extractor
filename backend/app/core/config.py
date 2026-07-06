@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     debug: bool = True
     upload_dir: str = "uploads"
     output_dir: str = "outputs"
-    max_upload_size_mb: int = 10
+    max_upload_size_mb: int = 25
     allowed_extensions: str = ".pdf"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
