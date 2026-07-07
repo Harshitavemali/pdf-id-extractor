@@ -65,7 +65,7 @@ function toApiRecord(record) {
 /**
  * Upload one or more PDFs to POST /api/extract.
  * @param {File[]} files
- * @returns {Promise<{ records: object[], warnings: string[] }>}
+ * @returns {Promise<{ records: object[], warnings: string[], fileResults: object[] }>}
  */
 export async function extractPdfs(files) {
   const formData = new FormData()
@@ -95,9 +95,19 @@ export async function extractPdfs(files) {
     throw new Error('Unexpected response from the server.')
   }
 
+  const fileResults = Array.isArray(data.file_results)
+    ? data.file_results.map((item) => ({
+        pdfName: item.pdf_name || '',
+        recordCount: item.record_count || 0,
+        success: Boolean(item.success),
+        message: item.message || '',
+      }))
+    : []
+
   return {
     records: data.records.map(mapRecord),
     warnings: [],
+    fileResults,
   }
 }
 

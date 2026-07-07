@@ -6,6 +6,7 @@ import { extractPdfs } from './services/api'
 function App() {
   const [files, setFiles] = useState([])
   const [records, setRecords] = useState([])
+  const [fileResults, setFileResults] = useState({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
@@ -17,6 +18,14 @@ function App() {
     }))
     setFiles((prev) => [...prev, ...entries])
     setError('')
+    // New files haven't been extracted yet - clear any stale status for them.
+    setFileResults((prev) => {
+      const next = { ...prev }
+      for (const file of newFiles) {
+        delete next[file.name]
+      }
+      return next
+    })
   }
 
   const handleRemove = (id) => {
@@ -32,13 +41,22 @@ function App() {
 
     try {
       const pdfFiles = files.map((entry) => entry.file)
-      const { records: extracted, warnings } = await extractPdfs(pdfFiles)
+      const { records: extracted, warnings, fileResults: results } =
+        await extractPdfs(pdfFiles)
       setRecords(extracted)
+
+      const resultsByName = {}
+      for (const result of results) {
+        resultsByName[result.pdfName] = result
+      }
+      setFileResults(resultsByName)
+
       if (warnings.length > 0) {
         setWarning(warnings.join(' '))
       }
     } catch (err) {
       setRecords([])
+      setFileResults({})
       setError(err.message || 'Something went wrong while extracting data.')
     } finally {
       setLoading(false)
@@ -73,6 +91,24 @@ function App() {
 
             <FileUpload onFilesAdd={handleFilesAdd} disabled={loading} />
 
+            {Object.keys(fileResults).length > 0 && (() => {
+              const results = Object.values(fileResults)
+              const succeeded = results.filter((r) => r.success).length
+              const failed = results.length - succeeded
+              return (
+                <div className="mt-4 flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">
+                  <span className="inline-flex items-center gap-1 text-green-700">
+                    ✓ {succeeded} extracted
+                  </span>
+                  {failed > 0 && (
+                    <span className="inline-flex items-center gap-1 text-red-700">
+                      ✗ {failed} not extracted
+                    </span>
+                  )}
+                </div>
+              )
+            })()}
+
             <div className="mt-5">
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-sm font-medium text-slate-700">
@@ -89,32 +125,51 @@ function App() {
                 </p>
               ) : (
                 <ul className="max-h-64 space-y-2 overflow-y-auto">
-                  {files.map(({ id, file }) => (
-                    <li
-                      key={id}
-                      className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
-                    >
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-red-50 text-xs font-bold text-red-600">
-                          PDF
-                        </span>
-                        <span
-                          className="truncate text-sm font-medium text-slate-700"
-                          title={file.name}
-                        >
-                          {file.name}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemove(id)}
-                        disabled={loading}
-                        className="shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  {files.map(({ id, file }) => {
+                    const result = fileResults[file.name]
+                    return (
+                      <li
+                        key={id}
+                        className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5"
                       >
-                        Remove
-                      </button>
-                    </li>
-                  ))}
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-red-50 text-xs font-bold text-red-600">
+                            PDF
+                          </span>
+                          <div className="min-w-0">
+                            <span
+                              className="block truncate text-sm font-medium text-slate-700"
+                              title={file.name}
+                            >
+                              {file.name}
+                            </span>
+                            {result && (
+                              <span
+                                className={
+                                  result.success
+                                    ? 'mt-0.5 inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700 ring-1 ring-green-200'
+                                    : 'mt-0.5 inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 ring-1 ring-red-200'
+                                }
+                                title={result.message || undefined}
+                              >
+                                {result.success
+                                  ? `✓ Extracted (${result.recordCount})`
+                                  : '✗ Not extracted'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemove(id)}
+                          disabled={loading}
+                          className="shrink-0 rounded-md px-2.5 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    )
+                  })}
                 </ul>
               )}
             </div>

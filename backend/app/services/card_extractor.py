@@ -25,7 +25,7 @@ ADDRESS_HINTS = re.compile(
     r"(?i)\b("
     r"h\.?\s*no|plot\s*no|flat\s*no|black\s*no|bl\s*no|p\.?\s*no|"
     r"colony|nagar|road|street|hyd|hyderabad|saidabad|malakpet|"
-    r"meerpet|saroor|uppal|khaja|bagh"
+    r"meerpet|saroor|uppal|khaja\s*bagh|bagh"
     r")\b|"
     r"\d{1,3}\s*[-/]\s*\d|"
     r"\d{6}"
@@ -140,12 +140,20 @@ def _header_card_box(
     page_width: float,
     page_height: float,
 ) -> tuple[float, float, float, float]:
-    """'ID CARD' header sits near the top-left of each card."""
+    """'ID CARD' header sits near the top-left of each card.
+
+    These fractions are set from measured word extents on real cards, not
+    guessed: a card's own text (name/address/phone/aadhaar/DL) can start
+    left of its 'ID CARD' anchor and the *next* card's own field labels
+    can start well left of *its* anchor too, so a too-wide box picks up
+    the neighboring card's labels and values. These margins keep every
+    card's own content while stopping short of the neighbor's.
+    """
     ax, ay = anchor_xy
-    x0 = max(0.0, ax - pitch_x * 0.12)
-    x1 = min(page_width, ax + pitch_x * 0.92)
+    x0 = max(0.0, ax - pitch_x * 0.47)
+    x1 = min(page_width, ax + pitch_x * 0.52)
     top = max(0.0, ay - pitch_y * 0.15)
-    bottom = min(page_height, ay + pitch_y * 0.92)
+    bottom = min(page_height, ay + pitch_y * 0.68)
     return (x0, top, x1, bottom)
 
 
@@ -284,6 +292,9 @@ def _value_after_labels(
                     break
                 if any(HEADER_NOISE.search(item["text"]) for item in line):
                     break
+                line_text = " ".join(item["text"] for item in line)
+                if re.search(r"\d{6,}", line_text):
+                    break
                 collected.extend(item["text"] for item in line)
                 extra += 1
 
@@ -296,15 +307,15 @@ def _value_after_labels(
 def _extract_phone(words: list[dict], text: str) -> str:
     value = _value_after_labels(
         words,
-        labels={"ph", "phone"},
-        stop_labels={"aadhaar", "aadhar", "adhar", "dl", "stand", "sl", "cell"},
+        labels={"ph", "phone", "cell"},
+        stop_labels={"aadhaar", "adhaar", "aadhar", "adhar", "dl", "stand", "sl"},
         max_extra_lines=0,
     )
     digits = re.sub(r"\D", "", value)
     if len(digits) >= 10 and digits[-10] in "6789":
         return digits[-10:]
 
-    match = re.search(r"(?i)(?:PH|Phone)\s*No\s*[:\s.-]*([6-9]\d{9})", text)
+    match = re.search(r"(?i)(?:PH|Phone|Cell)\s*(?:No)?\s*[:\s.-]*([6-9]\d{9})", text)
     return match.group(1) if match else ""
 
 
@@ -319,7 +330,7 @@ def _format_aadhaar(digits: str) -> str:
 def _extract_aadhaar(words: list[dict], text: str) -> str:
     value = _value_after_labels(
         words,
-        labels={"aadhaar", "aadhar", "adhar"},
+        labels={"aadhaar", "adhaar", "aadhar", "adhar"},
         stop_labels={"ph", "phone", "dl", "stand", "sl"},
         max_extra_lines=1,
     )
@@ -328,7 +339,7 @@ def _extract_aadhaar(words: list[dict], text: str) -> str:
         return formatted
 
     for word in words:
-        if not _label_hit(_token(word["text"]), {"aadhaar", "aadhar", "adhar"}):
+        if not _label_hit(_token(word["text"]), {"aadhaar", "adhaar", "aadhar", "adhar"}):
             continue
         nums: list[str] = []
         for other in sorted(words, key=lambda item: (item["top"], item["x0"])):
@@ -372,7 +383,7 @@ def _extract_dl(words: list[dict], text: str) -> str:
     value = _value_after_labels(
         words,
         labels={"dl"},
-        stop_labels={"ph", "phone", "aadhaar", "aadhar", "adhar", "stand", "sl"},
+        stop_labels={"ph", "phone", "aadhaar", "adhaar", "aadhar", "adhar", "stand", "sl"},
         max_extra_lines=0,
     )
     value = _clean(value).upper().replace(" ", "")
@@ -405,7 +416,7 @@ def _extract_stand(words: list[dict], text: str, box: tuple[float, float, float,
         spatial_value = _value_after_labels(
             lower_words,
             labels={"stand"},
-            stop_labels={"ph", "phone", "aadhaar", "aadhar", "adhar", "dl", "sl", "tatu"},
+            stop_labels={"ph", "phone", "aadhaar", "adhaar", "aadhar", "adhar", "dl", "sl", "tatu"},
             max_extra_lines=2,
         )
         spatial_value = re.sub(r"(?i)\b(tatu|state|president)\b", " ", spatial_value)
@@ -415,10 +426,10 @@ def _extract_stand(words: list[dict], text: str, box: tuple[float, float, float,
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     text_value = ""
     for index, line in enumerate(lines):
-        if not re.search(r"(?i)^Stand\s*:", line):
+        if not re.search(r"(?i)^(?:Auto\s*)?Stand\s*:", line):
             continue
 
-        value = re.sub(r"(?i)^Stand\s*:\s*", "", line).strip()
+        value = re.sub(r"(?i)^(?:Auto\s*)?Stand\s*:\s*", "", line).strip()
         if index + 1 < len(lines):
             next_line = lines[index + 1].strip()
             continuation = next_line
@@ -536,7 +547,7 @@ def _looks_like_name(line: str) -> bool:
         return False
     if HEADER_NOISE.search(line):
         return False
-    if re.search(r"(?i)\b(ph|aadhaar|aadhar|adhar|dl|stand|sl|no|cell|office|state|president)\b", line):
+    if re.search(r"(?i)\b(ph|aadhaar|adhaar|aadhar|adhar|dl|stand|sl|no|cell|office|state|president)\b", line):
         return False
     if re.search(r"\d", line):
         return False
@@ -599,7 +610,7 @@ def _extract_labeled_fields(text: str) -> tuple[str, str]:
 
 
 def _extract_name_address(words: list[dict], text: str) -> tuple[str, str]:
-    field_labels = {"ph", "phone", "aadhaar", "aadhar", "adhar", "dl", "stand", "sl", "no"}
+    field_labels = {"ph", "phone", "aadhaar", "adhaar", "aadhar", "adhar", "dl", "stand", "sl", "no"}
     useful: list[str] = []
 
     for line in _line_groups(words, tolerance=5):
@@ -654,7 +665,7 @@ def _extract_name_address(words: list[dict], text: str) -> tuple[str, str]:
     # Text fallback keeps full address including H.No / Plot No prefixes.
     if name:
         match = re.search(
-            rf"(?is){re.escape(name)}\s*(.*?)\s*(?=(?:PH|Phone)\s*No|Aadhaar\s*No|Aadhar\s*No|Adhar\s*No|DL\s*No|Stand\s*:)",
+            rf"(?is){re.escape(name)}\s*(.*?)\s*(?=(?:PH|Phone)\s*No|Aadhaar\s*No|Adhaar\s*No|Aadhar\s*No|Adhar\s*No|DL\s*No|Stand\s*:)",
             text,
         )
         if match:
@@ -714,8 +725,8 @@ def _parse_sl_from_text(text: str) -> str:
                 return sl
 
     colon_patterns = (
-        r"(?is)([\d-]{3,10})\s*\.?\s*oNl?\s*[lL]?\s*[sS]",
-        r"(?is)([\d-]{3,10})\s*\n\s*\.?\s*oNl?\s*\n?\s*[lL]?\s*[sS]",
+        r"(?is)([\d-]{3,10})\s*:?\s*\.?\s*oNl?\s*[lL]?\s*[sS]",
+        r"(?is)([\d-]{3,10})\s*\n\s*:?\s*\.?\s*oNl?\s*\n?\s*[lL]?\s*[sS]",
         r"(?is)(\d{3,6})\s*:?\s*\.?oNl?\s*[lL]?\s*[sS]",
         r"(?is)(\d{3,6})\s*\n\s*:?\s*\.?oNl?\s*\n?\s*[lL]?\s*[sS]",
         r"(?is)(\d{4,6})\.oN\s*[lL]\s*[sS]",
@@ -724,7 +735,12 @@ def _parse_sl_from_text(text: str) -> str:
     for pattern in colon_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            sl = _reverse_sl_digits(match.group(1))
+            raw = match.group(1)
+            if "-" in raw:
+                reversed_raw = raw[::-1]
+                if re.fullmatch(r"\d{1,4}-\d{1,4}", reversed_raw):
+                    return reversed_raw
+            sl = _reverse_sl_digits(raw)
             if sl:
                 return sl
 
@@ -804,6 +820,30 @@ def _extract_sl_no(
 
 
 
+def _is_regular_grid(points: list[tuple[float, float]], tol_ratio: float = 0.25) -> bool:
+    """Sanity-check that anchor points line up into a consistent grid.
+
+    Used to prefer 'ID CARD' header anchors over 'Stand' anchors when a
+    template's Stand/Auto-Stand field isn't laid out as cleanly (variable
+    label width throws its x-position off from card to card), which would
+    otherwise misplace every card's crop box.
+    """
+    if len(points) < 2:
+        return False
+    xs = sorted(p[0] for p in points)
+    ys = sorted(p[1] for p in points)
+    x_gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1) if xs[i + 1] - xs[i] > 40]
+    y_gaps = [ys[i + 1] - ys[i] for i in range(len(ys) - 1) if ys[i + 1] - ys[i] > 40]
+
+    def _consistent(gaps: list[float]) -> bool:
+        if not gaps:
+            return True
+        m = median(gaps)
+        return m > 0 and all(abs(g - m) <= m * tol_ratio for g in gaps)
+
+    return _consistent(x_gaps) and _consistent(y_gaps)
+
+
 def extract_records_from_page(page, pdf_name: str) -> list[dict[str, str]]:
     words = page.extract_words(
         x_tolerance=1,
@@ -818,10 +858,22 @@ def extract_records_from_page(page, pdf_name: str) -> list[dict[str, str]]:
     if _is_backside_page(page_text):
         return []
 
-    anchors = _stand_anchors(words)
+    header_anchor_candidates = _header_anchors(words)
+    stand_anchor_candidates = _stand_anchors(words)
+
+    anchors = []
     anchor_mode = "stand"
+    if stand_anchor_candidates and _is_regular_grid(stand_anchor_candidates):
+        anchors = stand_anchor_candidates
+        anchor_mode = "stand"
+    elif len(header_anchor_candidates) >= 2:
+        anchors = header_anchor_candidates
+        anchor_mode = "header"
+    elif stand_anchor_candidates:
+        anchors = stand_anchor_candidates
+        anchor_mode = "stand"
     if not anchors:
-        anchors = _header_anchors(words)
+        anchors = header_anchor_candidates
         anchor_mode = "header"
     if not anchors:
         anchors = _label_anchors(words, "name")
@@ -874,11 +926,10 @@ def extract_records_from_page(page, pdf_name: str) -> list[dict[str, str]]:
         phone = _extract_phone(card_words, text)
         aadhaar = _extract_aadhaar(card_words, text)
         dl_number = _extract_dl(card_words, text)
+        stand = _extract_stand(card_words, text, box)
         if anchor_mode == "stand":
-            stand = _extract_stand(card_words, text, box)
             sl_no = _extract_sl_no(page, box, stand_xy, pitch_x, pitch_y, text)
         else:
-            stand = ""
             sl_no = _parse_sl_from_text(text)
 
         # One row per person card. Name is required; other fields may be blank.

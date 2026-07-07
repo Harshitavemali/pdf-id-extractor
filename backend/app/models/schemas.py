@@ -14,9 +14,19 @@ class ExtractedRecord(BaseModel):
     pdf_name: str = ""
 
 
+class FileResult(BaseModel):
+    """Per-PDF extraction outcome, so the UI can show which files worked."""
+
+    pdf_name: str = ""
+    record_count: int = 0
+    success: bool = False
+    message: str = ""
+
+
 class ExtractResponse(BaseModel):
     success: bool = True
     records: list[ExtractedRecord] = Field(default_factory=list)
+    file_results: list[FileResult] = Field(default_factory=list)
 
 
 class DownloadExcelRequest(BaseModel):

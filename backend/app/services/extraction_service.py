@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from app.models.schemas import ExtractedRecord
+from app.models.schemas import ExtractedRecord, FileResult
 from app.services.card_extractor import extract_records_from_page
 
 
@@ -36,11 +36,40 @@ def extract_records_from_pdf(pdf_path: Path, pdf_name: str) -> list[ExtractedRec
 
 def extract_records_from_pdfs(
     pdf_paths: list[tuple[Path, str]],
-) -> list[ExtractedRecord]:
-    """Extract records from many PDFs."""
+) -> tuple[list[ExtractedRecord], list[FileResult]]:
+    """Extract records from many PDFs.
+
+    Each PDF is processed independently: if one file is unreadable or
+    yields nothing, it's reported as a failed FileResult rather than
+    aborting the whole batch or silently dropping out of the response.
+    """
     all_records: list[ExtractedRecord] = []
+    file_results: list[FileResult] = []
 
     for pdf_path, pdf_name in pdf_paths:
-        all_records.extend(extract_records_from_pdf(pdf_path, pdf_name))
+        try:
+            records = extract_records_from_pdf(pdf_path, pdf_name)
+        except Exception as exc:  # noqa: BLE001 - report per-file, keep going
+            file_results.append(
+                FileResult(
+                    pdf_name=pdf_name,
+                    record_count=0,
+                    success=False,
+                    message=f"Could not read this file: {exc}",
+                )
+            )
+            continue
 
-    return all_records
+        all_records.extend(records)
+        file_results.append(
+            FileResult(
+                pdf_name=pdf_name,
+                record_count=len(records),
+                success=len(records) > 0,
+                message=""
+                if records
+                else "No ID card records could be extracted from this PDF.",
+            )
+        )
+
+    return all_records, file_results
