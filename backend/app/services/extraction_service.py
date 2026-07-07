@@ -1,5 +1,6 @@
 """Orchestrate multi-PDF ID card extraction."""
 
+import gc
 from pathlib import Path
 
 from app.models.schemas import ExtractedRecord, FileResult
@@ -30,6 +31,14 @@ def extract_records_from_pdf(pdf_path: Path, pdf_name: str) -> list[ExtractedRec
                     seen_phones.add(phone)
                 seen_keys.add(key)
                 records.append(ExtractedRecord(**fields))
+
+            # pdfplumber caches each page's extracted objects/images in
+            # memory and normally only releases them when the whole PDF
+            # closes. These ID card sheets can have dozens of embedded
+            # photos per page across many pages, so that cache adds up
+            # fast on a memory-limited instance. Flush it as soon as we're
+            # done with this page instead of waiting for the file to close.
+            page.flush_cache()
 
     return records
 
@@ -71,5 +80,6 @@ def extract_records_from_pdfs(
                 else "No ID card records could be extracted from this PDF.",
             )
         )
+        gc.collect()
 
     return all_records, file_results

@@ -19,10 +19,28 @@ def validate_pdf(file: UploadFile) -> None:
         )
 
 
+MAX_FILES_PER_REQUEST = 8
+
+
 def validate_pdfs(files: list[UploadFile]) -> None:
-    """Validate that at least one PDF was uploaded."""
+    """Validate that a reasonable number of PDFs was uploaded.
+
+    Per-file size is already capped by max_upload_size_mb, but nothing
+    stopped someone from uploading many large files in a single request -
+    that's what actually multiplies memory pressure on a memory-limited
+    instance. Cap the batch size too.
+    """
     if not files:
         raise HTTPException(status_code=400, detail="At least one PDF file is required")
+
+    if len(files) > MAX_FILES_PER_REQUEST:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Too many files in one request ({len(files)}). "
+                f"Please upload at most {MAX_FILES_PER_REQUEST} PDFs at a time."
+            ),
+        )
 
     for file in files:
         validate_pdf(file)
