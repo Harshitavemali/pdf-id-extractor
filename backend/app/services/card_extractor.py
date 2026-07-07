@@ -8,9 +8,10 @@ from statistics import median
 from app.services.text_normalizer import collapse_doubled_characters, normalize_pdf_text
 
 HEADER_NOISE = re.compile(
-    r"TELANGANA|AUTO\s*MOTOR|DRIVERS|TRADE\s*UNION|BRTU|TATU|"
+    r"TELANGANA|AUTO\s*MOTOR|DRIVERS|TRADE\s*UNION|BRTU|TATU|TRSKV|"
     r"REGD|STATE\s*PRESIDENT|AFFILIATED|ID\s*CARD|VICE-?PRESIDENT|"
-    r"UNION|RAADEE|UUNNIIOONN",
+    r"UNION|RAADEE|UUNNIIOONN|^MEMBER$|^ADVISOR$|^TRAINEE$|"
+    r"^SECRETARY$|^TREASURER$|^PRESIDENT$|^DESIG\s*:?.*",
     re.IGNORECASE,
 )
 
@@ -89,6 +90,63 @@ def _stand_anchors(words: list[dict]) -> list[tuple[float, float]]:
             continue
         kept.append(point)
     return kept
+
+
+def _header_anchors(words: list[dict]) -> list[tuple[float, float]]:
+    """Locate each card by its 'ID CARD' header when there's no Stand field.
+
+    Some union templates (e.g. TRSKV/BRTU membership cards) never print a
+    'Stand :' line, so `_stand_anchors` finds nothing. Those cards still
+    print 'ID' immediately followed by 'CARD' at the top of every card, so
+    we anchor on that pair instead.
+    """
+    id_words = sorted(
+        (word for word in words if _token(word["text"]) == "id"),
+        key=lambda word: (word["top"], word["x0"]),
+    )
+    card_words = [word for word in words if _token(word["text"]) == "card"]
+
+    points: list[tuple[float, float]] = []
+    for id_word in id_words:
+        match = next(
+            (
+                card_word
+                for card_word in card_words
+                if abs(card_word["top"] - id_word["top"]) <= 4
+                and 0 <= card_word["x0"] - id_word["x1"] <= 25
+            ),
+            None,
+        )
+        if match is None:
+            continue
+        points.append(((id_word["x0"] + match["x1"]) / 2, (id_word["top"] + match["bottom"]) / 2))
+    return points
+
+
+def _label_anchors(words: list[dict], label: str) -> list[tuple[float, float]]:
+    """Anchor on a literal field label (e.g. 'Name' in 'Name : X') as a last resort.
+
+    Some templates split 'ID CARD' into odd tokens (e.g. 'ID' / 'CA' / 'RD')
+    so `_header_anchors` finds nothing either. Those cards still print an
+    explicit 'Name :' label once per card, so anchor on that instead.
+    """
+    return [_center(word) for word in words if _token(word["text"]) == label]
+
+
+def _header_card_box(
+    anchor_xy: tuple[float, float],
+    pitch_x: float,
+    pitch_y: float,
+    page_width: float,
+    page_height: float,
+) -> tuple[float, float, float, float]:
+    """'ID CARD' header sits near the top-left of each card."""
+    ax, ay = anchor_xy
+    x0 = max(0.0, ax - pitch_x * 0.12)
+    x1 = min(page_width, ax + pitch_x * 0.92)
+    top = max(0.0, ay - pitch_y * 0.15)
+    bottom = min(page_height, ay + pitch_y * 0.92)
+    return (x0, top, x1, bottom)
 
 
 def _cluster_1d(values: list[float], tolerance: float) -> list[float]:
@@ -492,6 +550,54 @@ def _looks_like_name(line: str) -> bool:
     return upper_ratio >= 0.55 and 1 <= len(words) <= 6
 
 
+_LABELED_FIELD_STARTS = re.compile(
+    r"(?i)^(desig|s/?o\.?\s*name|address|adhaar|aadhaar|aadhar|adhar|"
+    r"phone|ph|state|dl)\b"
+)
+
+
+def _extract_labeled_fields(text: str) -> tuple[str, str]:
+    """Parse templates with explicit 'Name :' / 'Address :' style labels.
+
+    These don't follow the row/column card layout the spatial heuristic
+    (`_extract_name_address`) expects, so they get their own simple,
+    label-driven line scan instead.
+    """
+    name_parts: list[str] = []
+    address_parts: list[str] = []
+    mode: str | None = None
+
+    for raw_line in text.splitlines():
+        line = _clean(raw_line)
+        if not line:
+            continue
+
+        match = re.match(r"(?i)^name\s*:\s*(.*)$", line)
+        if match:
+            name_parts = [match.group(1)] if match.group(1) else []
+            mode = "name"
+            continue
+
+        match = re.match(r"(?i)^address\s*:\s*(.*)$", line)
+        if match:
+            address_parts = [match.group(1)] if match.group(1) else []
+            mode = "address"
+            continue
+
+        if _LABELED_FIELD_STARTS.match(line) or HEADER_NOISE.search(line):
+            mode = None
+            continue
+
+        if mode == "name" and _looks_like_name(line):
+            name_parts.append(line)
+        elif mode == "address":
+            address_parts.append(line)
+
+    name = _clean(" ".join(name_parts))
+    address = _sanitize_address(_clean(", ".join(address_parts)))
+    return name, address
+
+
 def _extract_name_address(words: list[dict], text: str) -> tuple[str, str]:
     field_labels = {"ph", "phone", "aadhaar", "aadhar", "adhar", "dl", "stand", "sl", "no"}
     useful: list[str] = []
@@ -537,6 +643,10 @@ def _extract_name_address(words: list[dict], text: str) -> tuple[str, str]:
             if _looks_like_name(cleaned) and not _is_stand_fragment(cleaned):
                 name = cleaned
                 break
+
+    name = re.sub(r"(?i)^name\s*:\s*", "", name).strip()
+    address = re.sub(r"(?i)^(s/?o\.?\s*name|address)\s*:\s*", "", address).strip()
+    address = re.sub(r"(?i),?\s*s/?o\.?(?:name)?\s*:\s*", ", ", address).strip(" ,")
 
     if name and name in address:
         address = _clean(address.replace(name, ""))
@@ -709,6 +819,13 @@ def extract_records_from_page(page, pdf_name: str) -> list[dict[str, str]]:
         return []
 
     anchors = _stand_anchors(words)
+    anchor_mode = "stand"
+    if not anchors:
+        anchors = _header_anchors(words)
+        anchor_mode = "header"
+    if not anchors:
+        anchors = _label_anchors(words, "name")
+        anchor_mode = "labeled"
     if not anchors:
         return []
 
@@ -718,7 +835,18 @@ def extract_records_from_page(page, pdf_name: str) -> list[dict[str, str]]:
     seen_phones: set[str] = set()
 
     for stand_xy in anchors:
-        box = _card_box(stand_xy, pitch_x, pitch_y, page.width, page.height)
+        if anchor_mode == "stand":
+            box = _card_box(stand_xy, pitch_x, pitch_y, page.width, page.height)
+        elif anchor_mode == "labeled":
+            box = _header_card_box(
+                (stand_xy[0], stand_xy[1] - pitch_y * 0.15),
+                pitch_x,
+                pitch_y,
+                page.width,
+                page.height,
+            )
+        else:
+            box = _header_card_box(stand_xy, pitch_x, pitch_y, page.width, page.height)
         try:
             cropped = page.crop(box)
         except Exception:
@@ -739,12 +867,19 @@ def extract_records_from_page(page, pdf_name: str) -> list[dict[str, str]]:
         if BACKSIDE_MARKERS.search(text):
             continue
 
-        name, address = _extract_name_address(card_words, text)
+        if anchor_mode == "labeled":
+            name, address = _extract_labeled_fields(text)
+        else:
+            name, address = _extract_name_address(card_words, text)
         phone = _extract_phone(card_words, text)
         aadhaar = _extract_aadhaar(card_words, text)
         dl_number = _extract_dl(card_words, text)
-        stand = _extract_stand(card_words, text, box)
-        sl_no = _extract_sl_no(page, box, stand_xy, pitch_x, pitch_y, text)
+        if anchor_mode == "stand":
+            stand = _extract_stand(card_words, text, box)
+            sl_no = _extract_sl_no(page, box, stand_xy, pitch_x, pitch_y, text)
+        else:
+            stand = ""
+            sl_no = _parse_sl_from_text(text)
 
         # One row per person card. Name is required; other fields may be blank.
         if not name:
